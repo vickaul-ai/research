@@ -6,8 +6,6 @@ import {SEED_CARDS, findCard} from '@/lib/cards';
 import type {ResearchResult, Upload} from '@/lib/research';
 import type {SavedInput, SavedResearch, SavedSummary} from '@/lib/store';
 
-const READABLE = /\.(txt|md|markdown|csv|json|html?)$/i;
-
 const escapeHtml = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -73,18 +71,19 @@ export default function ResearchPage() {
     finally { setBusy(''); refreshSpend(); }
   }
 
-  async function addFiles(files: FileList | null) {
+  const addFiles = (files: FileList | null) => work('Reading files…', async () => {
     if (!files) return;
     const next: Upload[] = [];
+    const problems: string[] = [];
     for (const file of Array.from(files)) {
-      if (!READABLE.test(file.name)) {
-        setError(`${file.name}: only text files are supported for now (PDF and Word are coming).`);
-        continue;
-      }
-      next.push({name: file.name, text: await file.text()});
+      const form = new FormData();
+      form.append('file', file);
+      try { next.push(await call<Upload>('/api/files', {method: 'POST', body: form})); }
+      catch (e) { problems.push(e instanceof Error ? e.message : String(e)); }
     }
     setUploads(current => [...current, ...next].slice(0, 5));
-  }
+    if (problems.length) throw new Error(problems.join(' '));
+  });
 
   const run = () => work('Researching…', async () => {
     const input: SavedInput = {question, links: links.split(/\s+/).filter(Boolean), uploads, cardId, model, webSearch};
@@ -155,8 +154,9 @@ export default function ResearchPage() {
       <label htmlFor="links">Links <span className="hint">articles or YouTube, one per line</span></label>
       <textarea id="links" rows={3} value={links} onChange={e => setLinks(e.target.value)} />
 
-      <label htmlFor="files">Files <span className="hint">text or Markdown for now</span></label>
-      <input id="files" type="file" multiple onChange={e => addFiles(e.target.files)} />
+      <label htmlFor="files">Files <span className="hint">PDF, Word, text or Markdown, up to 4 MB each</span></label>
+      <input id="files" type="file" multiple accept=".pdf,.docx,.txt,.md,.markdown,.csv,.json,.html,.htm"
+        onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
       {uploads.length > 0 && (
         <ul className="files">
           {uploads.map(u => (
