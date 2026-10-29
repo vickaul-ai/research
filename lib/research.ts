@@ -26,6 +26,8 @@ Write Markdown, about 600–800 words:
 
 Cite every checkable fact with passage IDs in square brackets right after the claim, for example [S1:P2] or [S1:P2][S3:P1]. Use only IDs that appear in the passages. Mark your own judgement as such ("My read: ..."). If sources disagree, say so. If the evidence is thin, say that rather than filling the gap.`;
 
+export const RERUN_NOTE = `This is a rerun. The previous report is included as "previousReport" for comparison only: it is not evidence and must not be cited. After the bottom line, add a "## What changed since the last version" section that names material changes (new facts, reversed conclusions, sources that disappeared) or says plainly that nothing material changed.`;
+
 export const GAP_SYSTEM = `You plan web searches for a research question. Given the question, brief and any supplied evidence, return only JSON {"queries": [string]} with zero to two short search queries that would find the most important missing evidence. Return zero queries when the supplied evidence is enough.`;
 
 export interface Upload { name: string; text: string }
@@ -36,6 +38,8 @@ export interface ResearchInput {
   uploads?: Upload[];
   card?: Card;
   webSearch?: boolean;
+  /** On a rerun: the earlier report, so the new one can say what changed. */
+  previous?: {markdown: string; generatedAt: string};
 }
 
 export interface ChecklistItem {
@@ -196,8 +200,10 @@ export async function research(input: ResearchInput, {providers, model, meterTot
     sources: sources.map(s => ({id: s.id, title: s.title, url: s.url, kind: s.kind, truncated: s.truncated || undefined,
       passages: s.passages.map(p => ({id: p.id, at: p.locator, text: p.text}))})),
     unreadSources: checklist.filter(c => c.status !== 'read').map(c => ({label: c.label, reason: c.reason})),
+    previousReport: input.previous ? {writtenAt: input.previous.generatedAt, markdown: input.previous.markdown} : undefined,
   });
-  const report = await providers.generate({system: REPORT_SYSTEM, input: reportInput, maxOutputTokens: LIMITS.reportOutputTokens, operation: 'write_report'});
+  const system = input.previous ? `${REPORT_SYSTEM}\n\n${RERUN_NOTE}` : REPORT_SYSTEM;
+  const report = await providers.generate({system, input: reportInput, maxOutputTokens: LIMITS.reportOutputTokens, operation: 'write_report'});
   const markdown = report.text.trim();
   const title = /^#\s+(.+)$/m.exec(markdown)?.[1]?.trim() || question.slice(0, 80);
 

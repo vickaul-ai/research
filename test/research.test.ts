@@ -142,6 +142,18 @@ describe('research pipeline', () => {
     expect(result.sources[0].passages.map(p => p.locator)).toEqual(['0:00', '2:05']);
   });
 
+  it('on a rerun, sends the previous report for comparison but not as evidence', async () => {
+    const {fake, deps} = setup(url => {
+      if (url.includes('openai.com')) return {body: openaiText('# R\n\n**Bottom line:** same [S1:P1].\n\n## What changed since the last version\nNothing material.')};
+      throw new Error(`unexpected ${url}`);
+    });
+    await research({question: 'Q', uploads: [{name: 'n.md', text: page}], webSearch: false,
+      previous: {markdown: '# Old report', generatedAt: '2026-07-01T00:00:00Z'}}, deps);
+    const body = fake.calls.at(-1)!.body;
+    expect(body.instructions).toContain('What changed since the last version');
+    expect(JSON.parse(body.input).previousReport.markdown).toBe('# Old report');
+  });
+
   it('refuses to write a report with no readable evidence', async () => {
     const {deps} = setup(() => ({status: 500, body: {}}));
     await expect(research({question: 'Q', links: ['https://example.com/x'], webSearch: false}, deps)).rejects.toThrow(/None of the sources/);

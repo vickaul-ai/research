@@ -13,6 +13,7 @@ export interface RunRequest {
   cardId?: string | null;
   model?: ModelKey;
   webSearch?: boolean;
+  previous?: {markdown: string; generatedAt: string};
 }
 
 export async function runResearch(request: RunRequest, fetchImpl: typeof fetch = fetch): Promise<ResearchResult> {
@@ -30,7 +31,8 @@ export async function runResearch(request: RunRequest, fetchImpl: typeof fetch =
     },
   });
   return research(
-    {question: request.question, links: request.links, uploads: request.uploads, card: findCard(request.cardId), webSearch: request.webSearch},
+    {question: request.question, links: request.links, uploads: request.uploads, card: findCard(request.cardId), webSearch: request.webSearch,
+      previous: request.previous},
     {providers, model: model.id, meterTotal: () => meter.total, costLines: () => meter.lines},
   );
 }

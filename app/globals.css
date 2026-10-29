@@ -79,3 +79,27 @@ button.primary:disabled { opacity: 0.5; cursor: progress; }
 .sources li { margin-bottom: 6px; word-break: break-word; }
 .unavailable { color: var(--warn); }
 .files { margin: 6px 0 0; padding-left: 18px; font-size: 0.9rem; color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+button.secondary, button.danger {
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+button.danger { color: var(--warn); }
+button.link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.saved { margin-top: 48px; }
+.saved h2 { font-size: 1.15rem; }
+.saved ul { list-style: none; padding: 0; margin: 12px 0 0; }
+.saved li { padding: 8px 0; border-bottom: 1px solid var(--border); }
