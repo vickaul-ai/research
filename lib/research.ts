@@ -62,6 +62,9 @@ export interface ResearchResult {
   costLines: CostLine[];
   model: string;
   generatedAt: string;
+  /** Set by runResearch: the run log entry Vic can rate, and the card name at the time. */
+  runId?: string;
+  cardName?: string | null;
 }
 
 export function parseJsonObject(text: string): any {

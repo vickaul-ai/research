@@ -1,5 +1,4 @@
 // Wires the pipeline to environment keys, the chosen model and the spend caps.
-import {findCard} from './cards';
 import {DEFAULT_MODEL, MODELS, ModelKey} from './models';
 import {CostMeter, createProviders} from './providers';
 import {research, ResearchResult, Upload} from './research';
@@ -43,12 +42,19 @@ export async function runResearch(request: RunRequest, {store = getStore(), fetc
       supadata: process.env.SUPADATA_API_KEY,
     },
   });
+  const card = request.cardId ? (await store.listCards()).find(c => c.id === request.cardId) : undefined;
   try {
-    return await research(
-      {question: request.question, links: request.links, uploads: request.uploads, card: findCard(request.cardId), webSearch: request.webSearch,
+    const result = await research(
+      {question: request.question, links: request.links, uploads: request.uploads, card, webSearch: request.webSearch,
         previous: request.previous},
       {providers, model: model.id, meterTotal: () => meter.total, costLines: () => meter.lines},
     );
+    // Snapshot the card as used, so feedback stays meaningful after the card is edited.
+    result.runId = crypto.randomUUID();
+    result.cardName = card?.name ?? null;
+    await store.logRun({id: result.runId, question: request.question, cardId: card?.id ?? null, cardName: card?.name ?? null,
+      cardBrief: card?.brief ?? null, model: model.id, costUsd: result.costUsd});
+    return result;
   } finally {
     // Failed runs still cost money, so they count toward the month too.
     if (meter.total > 0) await store.recordSpend(meter.total, model.id);

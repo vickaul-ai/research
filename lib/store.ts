@@ -1,6 +1,7 @@
 // Saved research. A rerun is saved as a new version that points at the
 // original, so the history of a topic stays together.
 import {neon} from '@neondatabase/serverless';
+import {Card, SEED_CARDS} from './cards';
 import type {ResearchResult, Upload} from './research';
 
 export interface SavedInput {
@@ -40,6 +41,27 @@ export interface Store {
   /** Spend log for the monthly cap: every run is recorded, saved or not. */
   recordSpend(usd: number, model: string): Promise<void>;
   spendSince(since: Date): Promise<number>;
+  /** Cards Vic can edit. Seeded with SEED_CARDS the first time. */
+  listCards(): Promise<Card[]>;
+  saveCard(card: Card): Promise<Card>;
+  archiveCard(id: string): Promise<boolean>;
+  /** One row per research run, for learning which cards work (VIC-431). */
+  logRun(run: Omit<RunLog, 'createdAt' | 'rating' | 'note'>): Promise<void>;
+  rateRun(id: string, rating: 1 | -1, note: string): Promise<boolean>;
+  listRuns(limit?: number): Promise<RunLog[]>;
+}
+
+export interface RunLog {
+  id: string;
+  createdAt: string;
+  question: string;
+  cardId: string | null;
+  cardName: string | null;
+  cardBrief: string | null;
+  model: string;
+  costUsd: number;
+  rating: 1 | -1 | null;
+  note: string | null;
 }
 
 const SCHEMA = `create table if not exists research (
@@ -59,12 +81,58 @@ const SPEND_SCHEMA = `create table if not exists spend (
   model text not null
 )`;
 
+const CARD_SCHEMA = `create table if not exists cards (
+  id text primary key,
+  name text not null,
+  summary text not null,
+  brief text not null,
+  position int not null default 0,
+  archived boolean not null default false,
+  updated_at timestamptz not null default now()
+)`;
+
+const RUN_SCHEMA = `create table if not exists runs (
+  id uuid primary key,
+  created_at timestamptz not null default now(),
+  question text not null,
+  card_id text,
+  card_name text,
+  card_brief text,
+  model text not null,
+  cost_usd numeric not null,
+  rating smallint,
+  note text
+)`;
+
+export function validCard(card: any): Card {
+  const text = (value: unknown, max: number, label: string) => {
+    if (typeof value !== 'string' || !value.trim()) throw new Error(`Card ${label} is required`);
+    if (value.length > max) throw new Error(`Card ${label} is too long (${max} characters max)`);
+    return value.trim();
+  };
+  const id = typeof card?.id === 'string' && /^[a-z0-9-]{1,60}$/.test(card.id) ? card.id : null;
+  const name = text(card?.name, 60, 'name');
+  return {
+    id: id ?? (name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'card') + '-' + Math.random().toString(36).slice(2, 6),
+    name,
+    summary: text(card?.summary, 160, 'summary'),
+    brief: text(card?.brief, 2000, 'brief'),
+  };
+}
+
 export function neonStore(databaseUrl: string): Store {
   const sql = neon(databaseUrl);
   let ready: Promise<unknown> | null = null;
   const init = () => (ready ??= sql.query(SCHEMA)
     .then(() => sql.query('create index if not exists research_topic on research (topic_id, created_at)'))
-    .then(() => sql.query(SPEND_SCHEMA)));
+    .then(() => sql.query(SPEND_SCHEMA))
+    .then(() => sql.query(CARD_SCHEMA))
+    .then(() => sql.query(RUN_SCHEMA)));
+  const runLog = (row: any): RunLog => ({
+    id: row.id, createdAt: new Date(row.created_at).toISOString(), question: row.question, cardId: row.card_id,
+    cardName: row.card_name, cardBrief: row.card_brief, model: row.model, costUsd: Number(row.cost_usd),
+    rating: row.rating === null ? null : Number(row.rating) as 1 | -1, note: row.note,
+  });
 
   const summary = (row: any): SavedSummary => ({
     id: row.id, topicId: row.topic_id, createdAt: new Date(row.created_at).toISOString(), title: row.title,
@@ -127,6 +195,59 @@ export function neonStore(databaseUrl: string): Store {
       const rows = await sql.query('select coalesce(sum(usd), 0) as total from spend where created_at >= $1', [since.toISOString()]);
       return Number(rows[0].total);
     },
+
+    async listCards() {
+      await init();
+      let rows = await sql.query('select id, name, summary, brief from cards where not archived order by position, updated_at');
+      if (!rows.length) {
+        const existing = await sql.query('select count(*) as n from cards');
+        if (Number(existing[0].n) === 0) {
+          for (const [i, card] of SEED_CARDS.entries()) {
+            await sql.query('insert into cards (id, name, summary, brief, position) values ($1, $2, $3, $4, $5) on conflict do nothing',
+              [card.id, card.name, card.summary, card.brief, i]);
+          }
+          rows = await sql.query('select id, name, summary, brief from cards where not archived order by position, updated_at');
+        }
+      }
+      return rows.map((r: any) => ({id: r.id, name: r.name, summary: r.summary, brief: r.brief}));
+    },
+
+    async saveCard(input) {
+      await init();
+      const card = validCard(input);
+      await sql.query(
+        `insert into cards (id, name, summary, brief, position) values ($1, $2, $3, $4, (select coalesce(max(position), 0) + 1 from cards))
+         on conflict (id) do update set name = excluded.name, summary = excluded.summary, brief = excluded.brief, archived = false, updated_at = now()`,
+        [card.id, card.name, card.summary, card.brief],
+      );
+      return card;
+    },
+
+    async archiveCard(id) {
+      await init();
+      const rows = await sql.query('update cards set archived = true, updated_at = now() where id = $1 returning id', [id]);
+      return rows.length > 0;
+    },
+
+    async logRun(run) {
+      await init();
+      await sql.query(
+        'insert into runs (id, question, card_id, card_name, card_brief, model, cost_usd) values ($1, $2, $3, $4, $5, $6, $7)',
+        [run.id, run.question, run.cardId, run.cardName, run.cardBrief, run.model, run.costUsd],
+      );
+    },
+
+    async rateRun(id, rating, note) {
+      await init();
+      const rows = await sql.query('update runs set rating = $2, note = $3 where id = $1 returning id', [id, rating, note || null]);
+      return rows.length > 0;
+    },
+
+    async listRuns(limit = 200) {
+      await init();
+      const rows = await sql.query('select * from runs order by created_at desc limit $1', [limit]);
+      return rows.map(runLog);
+    },
   };
 }
 
@@ -134,6 +255,10 @@ export function neonStore(databaseUrl: string): Store {
 export function memoryStore(): Store {
   const items: SavedResearch[] = [];
   const spend: {at: Date; usd: number}[] = [];
+  type StoredCard = Card & {archived?: boolean};
+  let cards: StoredCard[] | null = null;
+  const seed = (): StoredCard[] => SEED_CARDS.map(card => ({...card}));
+  const runs: RunLog[] = [];
   const toSummary = (item: SavedResearch): SavedSummary => ({
     id: item.id, topicId: item.topicId, createdAt: item.createdAt, title: item.title, question: item.input.question,
     cardId: item.input.cardId, versions: items.filter(i => i.topicId === item.topicId).length,
@@ -173,6 +298,33 @@ export function memoryStore(): Store {
     },
     async spendSince(since) {
       return spend.filter(s => s.at >= since).reduce((sum, s) => sum + s.usd, 0);
+    },
+    async listCards() {
+      cards ??= seed();
+      return cards.filter(c => !c.archived).map(({archived, ...card}) => card);
+    },
+    async saveCard(input) {
+      cards ??= seed();
+      const card = validCard(input);
+      const index = cards.findIndex(c => c.id === card.id);
+      if (index >= 0) cards[index] = card; else cards.push(card);
+      return card;
+    },
+    async archiveCard(id) {
+      const card = (cards ??= seed()).find(c => c.id === id);
+      if (card) card.archived = true;
+      return !!card;
+    },
+    async logRun(run) {
+      runs.unshift({...run, createdAt: new Date().toISOString(), rating: null, note: null});
+    },
+    async rateRun(id, rating, note) {
+      const run = runs.find(r => r.id === id);
+      if (run) Object.assign(run, {rating, note: note || null});
+      return !!run;
+    },
+    async listRuns(limit = 200) {
+      return runs.slice(0, limit);
     },
   };
 }

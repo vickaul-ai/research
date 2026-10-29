@@ -2,7 +2,9 @@
 
 import {useEffect, useState} from 'react';
 import {marked} from 'marked';
-import {SEED_CARDS, findCard} from '@/lib/cards';
+import {SEED_CARDS, Card} from '@/lib/cards';
+import {CardEditor} from './CardEditor';
+import {Feedback} from './Feedback';
 import type {ResearchResult, Upload} from '@/lib/research';
 import type {SavedInput, SavedResearch, SavedSummary} from '@/lib/store';
 
@@ -50,6 +52,8 @@ export default function ResearchPage() {
   // A saved research item being viewed.
   const [opened, setOpened] = useState<Opened | null>(null);
 
+  const [cards, setCards] = useState<Card[]>(SEED_CARDS);
+  const [editingCards, setEditingCards] = useState(false);
   const [spend, setSpend] = useState<{spentUsd: number; monthlyCapUsd: number} | null>(null);
   const [saved, setSaved] = useState<SavedSummary[]>([]);
   const [search, setSearch] = useState('');
@@ -61,7 +65,10 @@ export default function ResearchPage() {
   async function refreshSpend() {
     try { setSpend(await call('/api/spend')); } catch { /* the header just omits it */ }
   }
-  useEffect(() => { refreshSaved(''); refreshSpend(); }, []);
+  async function refreshCards() {
+    try { setCards(await call<Card[]>('/api/cards')); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }
+  useEffect(() => { refreshSaved(''); refreshSpend(); refreshCards(); }, []);
 
   async function work(label: string, task: () => Promise<void>) {
     setBusy(label);
@@ -165,16 +172,20 @@ export default function ResearchPage() {
         </ul>
       )}
 
-      <label>Card <span className="hint">optional, steers the research</span></label>
-      <div className="cards">
-        {SEED_CARDS.map(card => (
-          <button key={card.id} type="button" className="card" aria-pressed={cardId === card.id}
-            onClick={() => setCardId(cardId === card.id ? null : card.id)}>
-            <strong>{card.name}</strong>
-            <span>{card.summary}</span>
-          </button>
-        ))}
-      </div>
+      <label>Card <span className="hint">optional, steers the research</span>{' '}
+        <button className="link hint" onClick={() => setEditingCards(!editingCards)}>{editingCards ? 'done editing' : 'edit cards'}</button>
+      </label>
+      {editingCards ? <CardEditor cards={cards} onChange={refreshCards} /> : (
+        <div className="cards">
+          {cards.map(card => (
+            <button key={card.id} type="button" className="card" aria-pressed={cardId === card.id}
+              onClick={() => setCardId(cardId === card.id ? null : card.id)}>
+              <strong>{card.name}</strong>
+              <span>{card.summary}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="row">
         <label><input type="radio" checked={model === 'openai'} onChange={() => setModel('openai')} /> GPT-6 Luna</label>
@@ -223,8 +234,9 @@ export default function ResearchPage() {
           {shown.unknownCitations.length > 0 && (
             <p className="unavailable">Warning: the report cited passages that don’t exist ({shown.unknownCitations.join(', ')}).</p>
           )}
+          {shown.runId && <Feedback key={shown.runId} runId={shown.runId} />}
           <p className="meta">
-            {(opened ? findCard(opened.input.cardId)?.name : findCard(draft?.input.cardId)?.name) ?? 'No card'} · {shown.model} · ${shown.costUsd.toFixed(3)} · {formatDate(shown.generatedAt)}
+            {shown.cardName ?? 'No card'} · {shown.model} · ${shown.costUsd.toFixed(3)} · {formatDate(shown.generatedAt)}
           </p>
         </article>
       )}
