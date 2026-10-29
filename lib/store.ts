@@ -2,6 +2,7 @@
 // original, so the history of a topic stays together.
 import {neon} from '@neondatabase/serverless';
 import {Card, SEED_CARDS} from './cards';
+import type {Proposal} from './proposals';
 import type {ResearchResult, Upload} from './research';
 
 export interface SavedInput {
@@ -49,6 +50,11 @@ export interface Store {
   logRun(run: Omit<RunLog, 'createdAt' | 'rating' | 'note'>): Promise<void>;
   rateRun(id: string, rating: 1 | -1, note: string): Promise<boolean>;
   listRuns(limit?: number): Promise<RunLog[]>;
+  /** Card reviews (VIC-432): when the last one ran, and the proposals Vic decides on. */
+  lastReviewAt(): Promise<Date | null>;
+  recordReview(runs: number, proposals: Omit<Proposal, 'id' | 'createdAt' | 'status'>[]): Promise<Proposal[]>;
+  listProposals(status?: Proposal['status']): Promise<Proposal[]>;
+  setProposalStatus(id: string, status: 'accepted' | 'rejected'): Promise<Proposal | null>;
 }
 
 export interface RunLog {
@@ -104,6 +110,22 @@ const RUN_SCHEMA = `create table if not exists runs (
   note text
 )`;
 
+const REVIEW_SCHEMA = `create table if not exists card_reviews (
+  created_at timestamptz not null default now(),
+  runs int not null,
+  proposals int not null
+)`;
+
+const PROPOSAL_SCHEMA = `create table if not exists card_proposals (
+  id uuid primary key,
+  created_at timestamptz not null default now(),
+  kind text not null,
+  card jsonb,
+  target_ids jsonb not null,
+  reason text not null,
+  status text not null default 'pending'
+)`;
+
 export function validCard(card: any): Card {
   const text = (value: unknown, max: number, label: string) => {
     if (typeof value !== 'string' || !value.trim()) throw new Error(`Card ${label} is required`);
@@ -127,7 +149,13 @@ export function neonStore(databaseUrl: string): Store {
     .then(() => sql.query('create index if not exists research_topic on research (topic_id, created_at)'))
     .then(() => sql.query(SPEND_SCHEMA))
     .then(() => sql.query(CARD_SCHEMA))
-    .then(() => sql.query(RUN_SCHEMA)));
+    .then(() => sql.query(RUN_SCHEMA))
+    .then(() => sql.query(REVIEW_SCHEMA))
+    .then(() => sql.query(PROPOSAL_SCHEMA)));
+  const proposal = (row: any): Proposal => ({
+    id: row.id, createdAt: new Date(row.created_at).toISOString(), kind: row.kind, card: row.card, targetIds: row.target_ids,
+    reason: row.reason, status: row.status,
+  });
   const runLog = (row: any): RunLog => ({
     id: row.id, createdAt: new Date(row.created_at).toISOString(), question: row.question, cardId: row.card_id,
     cardName: row.card_name, cardBrief: row.card_brief, model: row.model, costUsd: Number(row.cost_usd),
@@ -248,6 +276,38 @@ export function neonStore(databaseUrl: string): Store {
       const rows = await sql.query('select * from runs order by created_at desc limit $1', [limit]);
       return rows.map(runLog);
     },
+
+    async lastReviewAt() {
+      await init();
+      const rows = await sql.query('select max(created_at) as at from card_reviews');
+      return rows[0].at ? new Date(rows[0].at) : null;
+    },
+
+    async recordReview(runs, proposals) {
+      await init();
+      await sql.query('insert into card_reviews (runs, proposals) values ($1, $2)', [runs, proposals.length]);
+      const saved: Proposal[] = [];
+      for (const p of proposals) {
+        const rows = await sql.query(
+          'insert into card_proposals (id, kind, card, target_ids, reason) values ($1, $2, $3, $4, $5) returning *',
+          [crypto.randomUUID(), p.kind, p.card ? JSON.stringify(p.card) : null, JSON.stringify(p.targetIds), p.reason],
+        );
+        saved.push(proposal(rows[0]));
+      }
+      return saved;
+    },
+
+    async listProposals(status) {
+      await init();
+      const rows = await sql.query('select * from card_proposals where $1::text is null or status = $1 order by created_at desc limit 50', [status ?? null]);
+      return rows.map(proposal);
+    },
+
+    async setProposalStatus(id, status) {
+      await init();
+      const rows = await sql.query(`update card_proposals set status = $2 where id = $1 and status = 'pending' returning *`, [id, status]);
+      return rows[0] ? proposal(rows[0]) : null;
+    },
   };
 }
 
@@ -259,6 +319,8 @@ export function memoryStore(): Store {
   let cards: StoredCard[] | null = null;
   const seed = (): StoredCard[] => SEED_CARDS.map(card => ({...card}));
   const runs: RunLog[] = [];
+  const reviews: Date[] = [];
+  const proposals: Proposal[] = [];
   const toSummary = (item: SavedResearch): SavedSummary => ({
     id: item.id, topicId: item.topicId, createdAt: item.createdAt, title: item.title, question: item.input.question,
     cardId: item.input.cardId, versions: items.filter(i => i.topicId === item.topicId).length,
@@ -325,6 +387,23 @@ export function memoryStore(): Store {
     },
     async listRuns(limit = 200) {
       return runs.slice(0, limit);
+    },
+    async lastReviewAt() {
+      return reviews.at(-1) ?? null;
+    },
+    async recordReview(_, list) {
+      reviews.push(new Date());
+      const saved = list.map(p => ({...p, id: crypto.randomUUID(), createdAt: new Date().toISOString(), status: 'pending' as const}));
+      proposals.unshift(...saved);
+      return saved;
+    },
+    async listProposals(status) {
+      return proposals.filter(p => !status || p.status === status);
+    },
+    async setProposalStatus(id, status) {
+      const p = proposals.find(x => x.id === id && x.status === 'pending');
+      if (p) p.status = status;
+      return p ?? null;
     },
   };
 }

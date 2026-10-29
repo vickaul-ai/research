@@ -1,7 +1,8 @@
 'use client';
 
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import type {Card} from '@/lib/cards';
+import type {Proposal} from '@/lib/proposals';
 
 const BLANK: Card = {id: '', name: '', summary: '', brief: ''};
 
@@ -16,6 +17,42 @@ async function send(url: string, init: RequestInit) {
 export function CardEditor({cards, onChange}: {cards: Card[]; onChange: () => void}) {
   const [editing, setEditing] = useState<Card | null>(null);
   const [error, setError] = useState('');
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [reviewNote, setReviewNote] = useState('');
+  const [reviewing, setReviewing] = useState(false);
+
+  async function loadProposals() {
+    try { setProposals(await send('/api/cards/proposals', {method: 'GET'})); } catch { /* shown on next action */ }
+  }
+  useEffect(() => { loadProposals(); }, []);
+
+  async function review() {
+    setError('');
+    setReviewNote('');
+    setReviewing(true);
+    try {
+      const outcome = await send('/api/cards/proposals', {method: 'POST'});
+      if (outcome.status === 'skipped') setReviewNote(`Not enough new runs to learn from yet: ${outcome.runsSince} since the last review, ${outcome.needed} needed.`);
+      else setReviewNote(outcome.proposals.length ? `${outcome.proposals.length} suggestion(s) below.` : 'No changes suggested: the cards fit how you have been using them.');
+      await loadProposals();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setReviewing(false); }
+  }
+
+  async function decide(proposal: Proposal, accept: boolean) {
+    setError('');
+    try {
+      await send(`/api/cards/proposals/${proposal.id}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({accept})});
+      await loadProposals();
+      if (accept) onChange();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }
+
+  const nameOf = (id: string) => cards.find(c => c.id === id)?.name ?? id;
+  const describe = (p: Proposal) => p.kind === 'update' ? `Update “${nameOf(p.targetIds[0])}”`
+    : p.kind === 'add' ? `Add “${p.card?.name}”`
+    : p.kind === 'hide' ? `Hide “${nameOf(p.targetIds[0])}”`
+    : `Merge ${p.targetIds.map(id => `“${nameOf(id)}”`).join(' and ')} into “${p.card?.name}”`;
 
   async function save() {
     if (!editing) return;
@@ -66,7 +103,26 @@ export function CardEditor({cards, onChange}: {cards: Card[]; onChange: () => vo
         ))}
       </ul>
       {error && <p className="error">{error}</p>}
-      <button className="secondary" onClick={() => setEditing(BLANK)}>New card</button>
+      <div className="actions">
+        <button className="secondary" onClick={() => setEditing(BLANK)}>New card</button>
+        <button className="secondary" disabled={reviewing} onClick={review}>{reviewing ? 'Reviewing…' : 'Suggest improvements'}</button>
+      </div>
+      {reviewNote && <p className="meta">{reviewNote}</p>}
+      {proposals.length > 0 && (
+        <ul className="proposals">
+          {proposals.map(p => (
+            <li key={p.id}>
+              <strong>{describe(p)}</strong>
+              <p className="meta">{p.reason}</p>
+              {p.card && <p className="brief"><em>{p.card.summary}</em><br />{p.card.brief}</p>}
+              <div className="actions">
+                <button className="primary" onClick={() => decide(p, true)}>Accept</button>
+                <button className="secondary" onClick={() => decide(p, false)}>Reject</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

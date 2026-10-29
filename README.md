@@ -27,11 +27,15 @@ Each run has a spend cap (`RUN_CAP_USD`, default $0.25) and the month has a budg
 
 Save keeps the question, links, files, card and the full report with its sources. Rerun repeats the same inputs with fresh sources and saves a new version with a "What changed" section. Delete removes every version. Saved research needs `DATABASE_URL` (Neon); without it, it is kept in memory and lost on restart.
 
+## Cards that learn
+
+Cards are editable from the page ("edit cards"). Every run is logged with the card it used, and each report has a thumbs up/down with an optional note. On the 1st of each month a Vercel Cron job reviews the runs since the last review (at least 10) and a cheap model proposes up to four card changes: update, add, merge or hide. Nothing changes until you accept a proposal in the card editor. "Suggest improvements" runs the same review on demand once there are 3 new runs.
+
 ## Deploy (Vercel)
 
 1. Import `vickaul-ai/research` in Vercel.
 2. Add a Neon database (Vercel Storage → Neon, or paste a Neon connection string as `DATABASE_URL`). Tables are created on first use.
-3. Set environment variables: `APP_PASSWORD`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `SUPADATA_API_KEY`, optionally `RUN_CAP_USD` and `MONTHLY_CAP_USD`.
+3. Set environment variables: `APP_PASSWORD`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `SUPADATA_API_KEY`, `CRON_SECRET` (any long random string; Vercel sends it to the monthly card review), optionally `RUN_CAP_USD` and `MONTHLY_CAP_USD`.
 4. Deploy. Without `APP_PASSWORD` the deployed app refuses every request.
 
 ## Code
@@ -44,6 +48,7 @@ Save keeps the question, links, files, card and the full report with its sources
 - `lib/store.ts`: saved research and the spend log (Neon, or memory for local dev)
 - `lib/auth.ts`, `proxy.ts`: single-user password login
 - `lib/run.ts`: wires keys, caps and the store to the pipeline
+- `lib/proposals.ts`, `lib/learn.ts`: monthly card review and applying accepted proposals
 - `app/`: the page and the `/api/research` route
 
 The research core is a simplified port of the earlier M0 runner (`/Users/vic/Documents/Projects/research/m0`), without its audit and ledger machinery.

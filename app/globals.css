@@ -114,3 +114,7 @@ button.link {
 .feedback button[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); }
 .feedback input { flex: 1; min-width: 200px; }
 button.link.hint { font-size: 0.85rem; font-weight: 400; }
+.proposals { list-style: none; padding: 0; margin: 16px 0 0; }
+.proposals li { padding: 12px 0; border-top: 1px solid var(--border); }
+.proposals p { margin: 4px 0 8px; }
+.proposals .brief { font-size: 0.9rem; white-space: pre-wrap; }

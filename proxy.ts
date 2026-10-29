@@ -1,7 +1,8 @@
 import {NextRequest, NextResponse} from 'next/server';
 import {SESSION_COOKIE, validSession} from './lib/auth';
 
-const OPEN = ['/login', '/api/login'];
+// The cron route checks its own CRON_SECRET.
+const OPEN = ['/login', '/api/login', '/api/cron/review-cards'];
 
 export function proxy(request: NextRequest) {
   const password = process.env.APP_PASSWORD;
