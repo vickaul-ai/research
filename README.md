@@ -1,6 +1,6 @@
 # Research
 
-A personal research app. Ask a question (typed or dictated), add links to articles or YouTube videos, attach files, and pick a card to steer the research. The app reads what you gave it, searches the web for gaps, and writes a short cited report using cheap models.
+A personal research app. Ask a question (typed or dictated), add links to articles or YouTube videos, attach PDF, Word or text files, and pick a card to steer the research. The app reads what you gave it, searches the web for gaps, and writes a short cited report using cheap models.
 
 Tracking: Linear project "Research app (reset)".
 
