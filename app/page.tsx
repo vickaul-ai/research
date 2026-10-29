@@ -52,6 +52,7 @@ export default function ResearchPage() {
   // A saved research item being viewed.
   const [opened, setOpened] = useState<Opened | null>(null);
 
+  const [spend, setSpend] = useState<{spentUsd: number; monthlyCapUsd: number} | null>(null);
   const [saved, setSaved] = useState<SavedSummary[]>([]);
   const [search, setSearch] = useState('');
 
@@ -59,14 +60,17 @@ export default function ResearchPage() {
     try { setSaved(await call<SavedSummary[]>(`/api/saved${query ? `?q=${encodeURIComponent(query)}` : ''}`)); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
-  useEffect(() => { refreshSaved(''); }, []);
+  async function refreshSpend() {
+    try { setSpend(await call('/api/spend')); } catch { /* the header just omits it */ }
+  }
+  useEffect(() => { refreshSaved(''); refreshSpend(); }, []);
 
   async function work(label: string, task: () => Promise<void>) {
     setBusy(label);
     setError('');
     try { await task(); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setBusy(''); }
+    finally { setBusy(''); refreshSpend(); }
   }
 
   async function addFiles(files: FileList | null) {
@@ -139,7 +143,10 @@ export default function ResearchPage() {
 
   return (
     <main>
-      <h1>Research</h1>
+      <header className="top">
+        <h1>Research</h1>
+        {spend && <span className="meta">This month: ${spend.spentUsd.toFixed(2)} of ${spend.monthlyCapUsd.toFixed(0)}</span>}
+      </header>
 
       <label htmlFor="question">Question</label>
       <textarea id="question" rows={4} value={question} onChange={e => setQuestion(e.target.value)}

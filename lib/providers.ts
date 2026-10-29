@@ -82,6 +82,17 @@ export function createProviders({model, keys, meter, fetchImpl = fetch, sleep = 
     return value;
   }
 
+  /** Make a paid request. A timeout or dropped connection may still be billed, so it
+   * counts at the full price; an HTTP error response is treated as not billed. */
+  async function paid(operation: string, maxUsd: number, url: string, init: RequestInit) {
+    try {
+      return await request(url, init);
+    } catch (error) {
+      if (error instanceof ProviderError && error.code === 'transport_or_timeout') meter.add(operation, maxUsd);
+      throw error;
+    }
+  }
+
   async function request(url: string, init: RequestInit): Promise<{status: number; data: any}> {
     let response: Response;
     try {
@@ -99,7 +110,7 @@ export function createProviders({model, keys, meter, fetchImpl = fetch, sleep = 
   return {
     async search(query: string): Promise<{url: string; title: string}[]> {
       meter.check('tavily.search', TAVILY_CREDIT_USD);
-      const {data} = await request('https://api.tavily.com/search', {
+      const {data} = await paid('tavily.search', TAVILY_CREDIT_USD, 'https://api.tavily.com/search', {
         method: 'POST',
         headers: {Authorization: `Bearer ${key('tavily')}`, 'Content-Type': 'application/json'},
         body: JSON.stringify({query, search_depth: 'basic', max_results: 5, include_answer: false, include_raw_content: false}),
@@ -117,7 +128,7 @@ export function createProviders({model, keys, meter, fetchImpl = fetch, sleep = 
     async extract(url: string): Promise<{title: string; text: string}> {
       url = publicUrl(url);
       meter.check('tavily.extract', TAVILY_CREDIT_USD);
-      const {data} = await request('https://api.tavily.com/extract', {
+      const {data} = await paid('tavily.extract', TAVILY_CREDIT_USD, 'https://api.tavily.com/extract', {
         method: 'POST',
         headers: {Authorization: `Bearer ${key('tavily')}`, 'Content-Type': 'application/json'},
         body: JSON.stringify({urls: [url], extract_depth: 'basic', format: 'markdown'}),
@@ -137,7 +148,7 @@ export function createProviders({model, keys, meter, fetchImpl = fetch, sleep = 
       const token = key('supadata');
       const endpoint = new URL('https://api.supadata.ai/v1/transcript');
       endpoint.search = new URLSearchParams({url: `https://www.youtube.com/watch?v=${id}`, mode: 'native', text: 'false'}).toString();
-      let {status, data} = await request(endpoint.href, {method: 'GET', headers: {'x-api-key': token}});
+      let {status, data} = await paid('supadata.transcript', SUPADATA_CREDIT_USD, endpoint.href, {method: 'GET', headers: {'x-api-key': token}});
       meter.add('supadata.transcript', SUPADATA_CREDIT_USD);
       if (status === 206) throw new ProviderError('transcript_unavailable', 206);
       if (status === 202 && typeof data.jobId === 'string') {
@@ -167,7 +178,7 @@ export function createProviders({model, keys, meter, fetchImpl = fetch, sleep = 
       const maxUsd = tokenCost(model, Math.ceil((system.length + input.length) / 3), maxOutputTokens);
       meter.check(operation, maxUsd);
       const isOpenAI = model.provider === 'openai';
-      const {data} = await request(isOpenAI ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages', {
+      const {data} = await paid(operation, maxUsd, isOpenAI ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: isOpenAI
           ? {Authorization: `Bearer ${key('openai')}`, 'Content-Type': 'application/json'}

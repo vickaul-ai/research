@@ -1,10 +1,12 @@
-// Wires the pipeline to environment keys, the chosen model and a per-run cap.
+// Wires the pipeline to environment keys, the chosen model and the spend caps.
 import {findCard} from './cards';
 import {DEFAULT_MODEL, MODELS, ModelKey} from './models';
 import {CostMeter, createProviders} from './providers';
 import {research, ResearchResult, Upload} from './research';
+import {getStore, Store} from './store';
 
 export const RUN_CAP_USD = Number(process.env.RUN_CAP_USD) || 0.25;
+export const MONTHLY_CAP_USD = Number(process.env.MONTHLY_CAP_USD) || 20;
 
 export interface RunRequest {
   question: string;
@@ -16,9 +18,20 @@ export interface RunRequest {
   previous?: {markdown: string; generatedAt: string};
 }
 
-export async function runResearch(request: RunRequest, fetchImpl: typeof fetch = fetch): Promise<ResearchResult> {
+export function monthStart(now = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
+
+export async function spendStatus(store: Store = getStore()) {
+  const spent = await store.spendSince(monthStart());
+  return {spentUsd: spent, monthlyCapUsd: MONTHLY_CAP_USD, runCapUsd: RUN_CAP_USD, remainingUsd: Math.max(0, MONTHLY_CAP_USD - spent)};
+}
+
+export async function runResearch(request: RunRequest, {store = getStore(), fetchImpl = fetch}: {store?: Store; fetchImpl?: typeof fetch} = {}): Promise<ResearchResult> {
+  const {remainingUsd} = await spendStatus(store);
+  if (remainingUsd < 0.01) throw new Error(`This month's research budget ($${MONTHLY_CAP_USD}) is used up. Raise MONTHLY_CAP_USD to continue.`);
   const model = MODELS[request.model ?? DEFAULT_MODEL] ?? MODELS[DEFAULT_MODEL];
-  const meter = new CostMeter(RUN_CAP_USD);
+  const meter = new CostMeter(Math.min(RUN_CAP_USD, remainingUsd));
   const providers = createProviders({
     model,
     meter,
@@ -30,9 +43,14 @@ export async function runResearch(request: RunRequest, fetchImpl: typeof fetch =
       supadata: process.env.SUPADATA_API_KEY,
     },
   });
-  return research(
-    {question: request.question, links: request.links, uploads: request.uploads, card: findCard(request.cardId), webSearch: request.webSearch,
-      previous: request.previous},
-    {providers, model: model.id, meterTotal: () => meter.total, costLines: () => meter.lines},
-  );
+  try {
+    return await research(
+      {question: request.question, links: request.links, uploads: request.uploads, card: findCard(request.cardId), webSearch: request.webSearch,
+        previous: request.previous},
+      {providers, model: model.id, meterTotal: () => meter.total, costLines: () => meter.lines},
+    );
+  } finally {
+    // Failed runs still cost money, so they count toward the month too.
+    if (meter.total > 0) await store.recordSpend(meter.total, model.id);
+  }
 }
