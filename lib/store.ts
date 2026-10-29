@@ -37,6 +37,9 @@ export interface Store {
   get(id: string): Promise<SavedResearch | null>;
   versions(topicId: string): Promise<SavedSummary[]>;
   deleteTopic(topicId: string): Promise<number>;
+  /** Spend log for the monthly cap: every run is recorded, saved or not. */
+  recordSpend(usd: number, model: string): Promise<void>;
+  spendSince(since: Date): Promise<number>;
 }
 
 const SCHEMA = `create table if not exists research (
@@ -50,10 +53,18 @@ const SCHEMA = `create table if not exists research (
   result jsonb not null
 )`;
 
+const SPEND_SCHEMA = `create table if not exists spend (
+  created_at timestamptz not null default now(),
+  usd numeric not null,
+  model text not null
+)`;
+
 export function neonStore(databaseUrl: string): Store {
   const sql = neon(databaseUrl);
   let ready: Promise<unknown> | null = null;
-  const init = () => (ready ??= sql.query(SCHEMA).then(() => sql.query('create index if not exists research_topic on research (topic_id, created_at)')));
+  const init = () => (ready ??= sql.query(SCHEMA)
+    .then(() => sql.query('create index if not exists research_topic on research (topic_id, created_at)'))
+    .then(() => sql.query(SPEND_SCHEMA)));
 
   const summary = (row: any): SavedSummary => ({
     id: row.id, topicId: row.topic_id, createdAt: new Date(row.created_at).toISOString(), title: row.title,
@@ -105,12 +116,24 @@ export function neonStore(databaseUrl: string): Store {
       const rows = await sql.query('delete from research where topic_id = $1 returning id', [topicId]);
       return rows.length;
     },
+
+    async recordSpend(usd, model) {
+      await init();
+      await sql.query('insert into spend (usd, model) values ($1, $2)', [usd, model]);
+    },
+
+    async spendSince(since) {
+      await init();
+      const rows = await sql.query('select coalesce(sum(usd), 0) as total from spend where created_at >= $1', [since.toISOString()]);
+      return Number(rows[0].total);
+    },
   };
 }
 
 /** In-memory store for tests and for local development without a database. */
 export function memoryStore(): Store {
   const items: SavedResearch[] = [];
+  const spend: {at: Date; usd: number}[] = [];
   const toSummary = (item: SavedResearch): SavedSummary => ({
     id: item.id, topicId: item.topicId, createdAt: item.createdAt, title: item.title, question: item.input.question,
     cardId: item.input.cardId, versions: items.filter(i => i.topicId === item.topicId).length,
@@ -144,6 +167,12 @@ export function memoryStore(): Store {
       const before = items.length;
       for (let i = items.length - 1; i >= 0; i--) if (items[i].topicId === topicId) items.splice(i, 1);
       return before - items.length;
+    },
+    async recordSpend(usd) {
+      spend.push({at: new Date(), usd});
+    },
+    async spendSince(since) {
+      return spend.filter(s => s.at >= since).reduce((sum, s) => sum + s.usd, 0);
     },
   };
 }
