@@ -4,8 +4,8 @@
 import {ModelConfig, SUPADATA_CREDIT_USD, TAVILY_CREDIT_USD, tokenCost} from './models';
 
 export class ProviderError extends Error {
-  constructor(public code: string, public status?: number) {
-    super(`Provider request failed: ${code}${status ? ` (HTTP ${status})` : ''}`);
+  constructor(public code: string, public status?: number, public detail?: string) {
+    super(`Provider request failed: ${code}${status ? ` (HTTP ${status})` : ''}${detail ? `: ${detail}` : ''}`);
     this.name = 'ProviderError';
   }
 }
@@ -37,7 +37,9 @@ export class CostMeter {
   }
 }
 
-const TIMEOUT_MS = 90_000;
+const TIMEOUT_MS = 60_000;
+// Writing the report is the slowest call; give it longer, within the route's 300s limit.
+const GENERATE_TIMEOUT_MS = 180_000;
 const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/;
 
 export function youtubeId(value: string): string | null {
@@ -77,32 +79,42 @@ export function createProviders({model, keys, meter, fetchImpl = fetch, sleep = 
   sleep?: (ms: number) => Promise<unknown>;
 }) {
   function key(name: keyof Keys): string {
-    const value = keys[name];
+    // Keys pasted into a dashboard often carry a trailing newline, which fetch rejects as a header.
+    const value = keys[name]?.trim();
     if (!value) throw new ProviderError(`missing_${name}_key`);
     return value;
   }
 
   /** Make a paid request. A timeout or dropped connection may still be billed, so it
    * counts at the full price; an HTTP error response is treated as not billed. */
-  async function paid(operation: string, maxUsd: number, url: string, init: RequestInit) {
+  async function paid(operation: string, maxUsd: number, url: string, init: RequestInit, timeoutMs = TIMEOUT_MS) {
     try {
-      return await request(url, init);
+      return await request(url, init, timeoutMs);
     } catch (error) {
-      if (error instanceof ProviderError && error.code === 'transport_or_timeout') meter.add(operation, maxUsd);
-      throw error;
+      if (!(error instanceof ProviderError)) throw error;
+      if (error.code === 'timeout' || error.code === 'network_error') meter.add(operation, maxUsd);
+      // Name the step so an error shown to Vic says which call failed.
+      throw new ProviderError(error.code, error.status, [operation, error.detail].filter(Boolean).join(': '));
     }
   }
 
-  async function request(url: string, init: RequestInit): Promise<{status: number; data: any}> {
+  async function request(url: string, init: RequestInit, timeoutMs = TIMEOUT_MS): Promise<{status: number; data: any}> {
     let response: Response;
     try {
-      response = await fetchImpl(url, {...init, signal: AbortSignal.timeout(TIMEOUT_MS)});
-    } catch {
-      throw new ProviderError('transport_or_timeout');
+      response = await fetchImpl(url, {...init, signal: AbortSignal.timeout(timeoutMs)});
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+        throw new ProviderError('timeout');
+      }
+      const cause = error instanceof Error ? (error.cause instanceof Error ? error.cause.message : error.message) : String(error);
+      throw new ProviderError('network_error', undefined, cause.slice(0, 160));
     }
     let data: any = null;
     try { data = await response.json(); } catch { /* handled below */ }
-    if (response.status < 200 || response.status >= 300) throw new ProviderError('http_error', response.status);
+    if (response.status < 200 || response.status >= 300) {
+      const detail = data?.error?.message ?? data?.message ?? (typeof data?.error === 'string' ? data.error : undefined);
+      throw new ProviderError('http_error', response.status, typeof detail === 'string' ? detail.slice(0, 200) : undefined);
+    }
     if (!data || typeof data !== 'object') throw new ProviderError('invalid_json', response.status);
     return {status: response.status, data};
   }
@@ -186,7 +198,7 @@ export function createProviders({model, keys, meter, fetchImpl = fetch, sleep = 
         body: JSON.stringify(isOpenAI
           ? {model: model.id, instructions: system, input, reasoning: {effort: 'low'}, max_output_tokens: maxOutputTokens, store: false}
           : {model: model.id, system, messages: [{role: 'user', content: input}], max_tokens: maxOutputTokens}),
-      });
+      }, GENERATE_TIMEOUT_MS);
       const inputTokens = Number(data.usage?.input_tokens) || 0;
       const outputTokens = Number(data.usage?.output_tokens) || 0;
       meter.add(operation, inputTokens || outputTokens ? tokenCost(model, inputTokens, outputTokens) : maxUsd);
